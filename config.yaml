@@ -1,0 +1,25 @@
+name: "Hand Control Pro"
+description: "Control Home Assistant using hand gestures via RTSP camera stream."
+version: "1.1.4"
+slug: "hand_control_pro"
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+startup: application
+boot: auto
+map:
+  - config:rw
+options:
+  rtsp_url: "rtsp://tfricke:idnfn738%3F22@192.168.178.64:88/videoMain"
+  ha_url: "http://192.168.178.164:8123"
+  ha_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiIzNWNlZjUwOWFhYzU0NTM1YmEzNzJjMTgwZjY5N2I0ZCIsImlhdCI6MTc3MzQ4NzY4NiwiZXhwIjoyMDg4ODQ3Njg2fQ.kiqcGOVnJ45KbBjaltu65dLEX_L4aCpjrXabTz2GcQM"
+  global_cooldown: 5.0
+schema:
+  rtsp_url: str
+  ha_url: str
+  ha_token: str
+  global_cooldown: float
