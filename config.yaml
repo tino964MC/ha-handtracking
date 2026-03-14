@@ -1,6 +1,6 @@
 name: "Hand Control Pro"
 description: "Control Home Assistant using hand gestures via RTSP camera stream."
-version: "1.1.4"
+version: "1.1.5"
 slug: "hand_control_pro"
 init: false
 arch:
