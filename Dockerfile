@@ -21,7 +21,7 @@ RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 
 COPY hand_tracker.py .
 COPY run.sh .
-COPY hand_control_pro_gestures.yaml .
+# Konfiguration erfolgt jetzt über das Dashboard-UI
 RUN sed -i 's/\r//' /app/run.sh && chmod a+x /app/run.sh
 
 RUN mkdir -p /etc/services.d/hand_control_pro \

@@ -41,7 +41,7 @@ hands = mp_hands.Hands(
 )
 
 def load_config():
-    """Lädt Basis-Einstellungen und Gesten-Konfiguration."""
+    """Lädt Basis-Einstellungen und Gesten direkt vom Home Assistant Add-on Dashboard."""
     config = {
         "settings": {
             "global_cooldown": 5.0,
@@ -52,7 +52,7 @@ def load_config():
         "gestures": {}
     }
 
-    # 1. Basis-Einstellungen vom Supervisor
+    # 1. Einstellungen vom Supervisor laden
     if IS_ADDON:
         try:
             with open(HA_OPTIONS_PATH, 'r', encoding='utf-8') as f:
@@ -61,41 +61,36 @@ def load_config():
                 config["settings"]["ha_url"] = data.get("ha_url", "http://supervisor/core")
                 config["settings"]["ha_token"] = data.get("ha_token", "")
                 config["settings"]["rtsp_url"] = data.get("rtsp_url", "")
+
+                # Gesten aus dem Dashboard parsen (Format: "service,entity_id")
+                gesture_mapping = {
+                    "peace_sign_action": "PEACE_SIGN",
+                    "index_pointing_action": "INDEX_POINTING",
+                    "thumbs_up_action": "THUMBS_UP",
+                    "open_hand_action": "OPEN_HAND",
+                    "fist_action": "FIST",
+                    "rock_on_action": "ROCK_ON"
+                }
+
+                for key, gesture_name in gesture_mapping.items():
+                    action_str = data.get(key, "")
+                    if action_str and "," in action_str:
+                        service, entity_id = [x.strip() for x in action_str.split(",", 1)]
+                        config["gestures"][gesture_name] = {
+                            "service": service,
+                            "entity_id": entity_id,
+                            "data": {}
+                        }
+                
+                if config["gestures"]:
+                    print(f"🟢 {len(config['gestures'])} Gesten aus dem Dashboard geladen.")
         except Exception as e:
             print(f"🔴 Add-on Options Fehler: {e}")
 
-    # 2. Gesten-Konfiguration suchen
-    search_paths = [
-        "/config/gestures.json",
-        "/config/hand_control_pro_gestures.yaml",
-        "gestures.json",
-        "config.json"
-    ]
-    
-    found = False
-    for path in search_paths:
-        if os.path.exists(path):
-            try:
-                with open(path, 'r', encoding='utf-8') as f:
-                    if path.endswith('.yaml') or path.endswith('.yml'):
-                        config["gestures"] = yaml.safe_load(f)
-                    else:
-                        file_data = json.load(f)
-                        config["gestures"] = file_data.get("gestures", file_data)
-                    print(f"🟢 Konfiguration geladen aus: {path}")
-                    found = True
-                    break
-            except Exception as e:
-                print(f"⚠️ Konnte {path} nicht laden: {e}")
-
-    if not found and IS_ADDON:
-        default_path = "/config/gestures.json"
-        try:
-            example = {"PEACE_SIGN": {"service": "light.toggle", "entity_id": "light.elk_bledom", "data": {}}}
-            with open(default_path, 'w', encoding='utf-8') as f:
-                json.dump(example, f, indent=4)
-            config["gestures"] = example
-        except: pass
+    # Fallback für lokale Tests (Env-Variablen)
+    if not config["gestures"] and not IS_ADDON:
+        # Hier könnten wir noch eine lokale config laden, falls nötig
+        pass
 
     return config
 
