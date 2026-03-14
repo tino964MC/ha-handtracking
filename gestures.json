@@ -1,0 +1,12 @@
+{
+    "settings": {
+        "global_cooldown": 5.0
+    },
+    "gestures": {
+        "PEACE_SIGN": {
+            "service": "light.toggle",
+            "entity_id": "light.elk_bledom",
+            "data": {}
+        }
+    }
+}
