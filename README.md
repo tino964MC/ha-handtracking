@@ -8,43 +8,33 @@ Die benötigten Python-Bibliotheken wurden bereits installiert. Falls sie auf ei
 pip install opencv-python mediapipe requests python-dotenv
 ```
 
-## Konfiguration (Fortgeschritten)
+## Konfiguration (Empfohlen: YAML)
 
-Du kannst nun jede Geste einer eigenen Aktion in Home Assistant zuweisen. Dafür gibt es die Datei `config.json`.
+Für das Home Assistant Add-on wird die Konfiguration über eine YAML-Datei empfohlen. Diese ist übersichtlicher und einfacher zu bearbeiten.
 
-### 1. Die .env Datei
-Diese enthält weiterhin deine Zugangsdaten:
-```env
-RTSP_URL=rtsp://...
-HA_URL=http://...
-HA_TOKEN=...
+Die Datei findest du unter: `/config/hand_control_pro_gestures.yaml`
+
+Eine vollständige Anleitung mit Beispielen findest du hier:
+👉 **[GESTURES_YAML_GUIDE.md](GESTURES_YAML_GUIDE.md)**
+
+### Beispiel (YAML):
+```yaml
+PEACE_SIGN:
+  service: "light.toggle"
+  entity_id: "light.schreibtisch"
 ```
 
-### 2. Die config.json Datei
-Hier legst du fest, welche Geste was tun soll. Du kannst Lichter, Schalter oder andere Services steuern und sogar Helligkeit oder Farben übergeben:
+---
+
+## Konfiguration (Alternativ: JSON)
+
+Falls du JSON bevorzugst, kannst du die Datei `gestures.json` verwenden.
 
 ```json
 {
-    "gestures": {
-        "OPEN_HAND": {
-            "service": "light.turn_on",
-            "entity_id": "light.wohnzimmer",
-            "data": { "brightness_pct": 100, "rgb_color": [255, 255, 255] }
-        },
-        "FIST": {
-            "service": "light.turn_off",
-            "entity_id": "light.wohnzimmer"
-        },
-        "INDEX_POINTING": {
-            "service": "light.turn_on",
-            "entity_id": "light.schreibtisch",
-            "data": { "color_name": "blue" }
-        },
-        "PEACE_SIGN": {
-            "service": "light.turn_on",
-            "entity_id": "light.schreibtisch",
-            "data": { "color_name": "red" }
-        }
+    "PEACE_SIGN": {
+        "service": "light.toggle",
+        "entity_id": "light.schreibtisch"
     }
 }
 ```
