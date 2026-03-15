@@ -229,12 +229,11 @@ def main():
     DEBUG_INTERVAL        = 30
     
     log_separator()
-    log.info("Hand Control started (Instant Reaction v1.3.2)")
+    log.info("Hand Control started")
     log.info(f"  Add-on mode  : {IS_ADDON}")
     log.info(f"  Headless     : {headless}")
     log.info(f"  RTSP URL     : {rtsp_url}")
     log.info(f"  Cooldown     : {cooldown_val}s")
-    log.info(f"  Reaction     : INSTANT")
     log_separator()
 
     cap = open_camera(rtsp_url)
