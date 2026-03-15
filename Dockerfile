@@ -24,11 +24,11 @@ COPY run.sh .
 # Konfiguration erfolgt jetzt über das Dashboard-UI
 RUN sed -i 's/\r//' /app/run.sh && chmod a+x /app/run.sh
 
-RUN mkdir -p /etc/services.d/hand_control_pro \
+RUN mkdir -p /etc/services.d/hand_control \
     && printf '#!/usr/bin/with-contenv bashio\nexec /app/run.sh\n' \
-    > /etc/services.d/hand_control_pro/run \
-    && sed -i 's/\r//' /etc/services.d/hand_control_pro/run \
-    && chmod a+x /etc/services.d/hand_control_pro/run
+    > /etc/services.d/hand_control/run \
+    && sed -i 's/\r//' /etc/services.d/hand_control/run \
+    && chmod a+x /etc/services.d/hand_control/run
 
 # Explizit s6 als Entrypoint setzen
 ENTRYPOINT ["/init"]

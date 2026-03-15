@@ -1,7 +1,7 @@
-name: "Hand Control Pro"
+name: "Hand Control"
 description: "Control Home Assistant using hand gestures via RTSP camera stream."
-version: "1.1.6"
-slug: "hand_control_pro"
+version: "1.2.9"
+slug: "hand_control"
 init: false
 arch:
   - aarch64
@@ -14,21 +14,23 @@ boot: auto
 map:
   - config:rw
 options:
-  rtsp_url: "rtsp://tfricke:idnfn738%3F22@192.168.178.64:88/videoMain"
-  ha_url: "http://192.168.178.164:8123"
-  ha_token: ""
-  global_cooldown: 5.0
-  peace_sign_action: "light.toggle,light.elk_bledom"
-  index_pointing_action: ""
-  thumbs_up_action: ""
-  open_hand_action: ""
-  fist_action: ""
-  rock_on_action: ""
+  rtsp_url: "rtsp://user:pass@192.168.1.50:554/stream1"
+  ha_url: "http://homeassistant.local:8123"
+  ha_token: "YOUR_LONG_LIVED_ACCESS_TOKEN"
+  global_cooldown: 3.0
+  debug_logging: false
+  peace_sign_action: "light.toggle,light.living_room"
+  index_pointing_action: "media_player.media_play_pause,media_player.tv"
+  thumbs_up_action: "scene.turn_on,scene.movie_night"
+  open_hand_action: "light.turn_off,light.all_lights"
+  fist_action: "lock.lock,lock.front_door"
+  rock_on_action: "script.party_mode"
 schema:
   rtsp_url: str
   ha_url: str
   ha_token: str
   global_cooldown: float
+  debug_logging: bool
   peace_sign_action: str?
   index_pointing_action: str?
   thumbs_up_action: str?

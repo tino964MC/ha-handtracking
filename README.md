@@ -1,53 +1,68 @@
-# Hand Tracking Home Assistant Controller
+# Hand Control: Home Assistant Gesture Controller
 
-Dieses Skript verbindet sich mit dem RTSP-Stream deiner Kamera, erkennt Handgesten mittels MediaPipe und sendet HTTP-Befehle an dein Home Assistant, um beispielsweise ein Licht aus- oder einzuschalten.
+Control your Home Assistant smart home using simple hand gestures captured via any RTSP camera stream. This project uses MediaPipe for hand tracking and gesture recognition.
 
-## Voraussetzungen installieren
-Die benötigten Python-Bibliotheken wurden bereits installiert. Falls sie auf einem anderen Rechner benötigt werden:
-```bash
-pip install opencv-python mediapipe requests python-dotenv
-```
+## Features
 
-## Konfiguration (Empfohlen: YAML)
+- **Real-time Hand Tracking**: Powered by Google's MediaPipe.
+- **RTSP Support**: Works with most IP cameras and NVRs.
+- **Home Assistant Integration**: Trigger any service or script directly.
+- **Customizable Gestures**: Map specific gestures to Home Assistant actions.
+- **Resource Efficient**: Optimized for low CPU usage with dynamic frame skipping.
+- **Home Assistant Add-on**: Easy installation as an official-style add-on.
 
-Für das Home Assistant Add-on wird die Konfiguration über eine YAML-Datei empfohlen. Diese ist übersichtlicher und einfacher zu bearbeiten.
+## Supported Gestures
 
-Die Datei findest du unter: `/config/hand_control_pro_gestures.yaml`
+| Gesture          | Description                       |
+| :--------------- | :-------------------------------- |
+| `OPEN_HAND`      | All fingers extended              |
+| `FIST`           | All fingers curled                |
+| `INDEX_POINTING` | Only index finger extended        |
+| `PEACE_SIGN`     | Index and middle fingers extended |
+| `THUMBS_UP`      | Thumb pointed upwards             |
+| `ROCK_ON`        | Index and pinky fingers extended  |
 
-Eine vollständige Anleitung mit Beispielen findest du hier:
-👉 **[GESTURES_YAML_GUIDE.md](GESTURES_YAML_GUIDE.md)**
+## Installation
 
-### Beispiel (YAML):
+### As a Home Assistant Add-on
+
+1. Go to **Settings** > **Add-ons** > **Add-on Store**.
+2. Click the three dots (top right) > **Repositories**.
+3. Add: `https://github.com/tino964MC/ha-handtracking`
+4. Find **Hand Control** and click **Install**.
+
+## ⚙️ Configuration
+
+The add-on can be configured directly through the Home Assistant UI or via `config.yaml`.
+
+### Example `config.yaml` / Add-on Options
+
 ```yaml
-PEACE_SIGN:
-  service: "light.toggle"
-  entity_id: "light.schreibtisch"
+rtsp_url: "rtsp://user:pass@192.168.1.50:554/stream1"
+ha_url: "http://homeassistant.local:8123"
+ha_token: "YOUR_LONG_LIVED_ACCESS_TOKEN"
+global_cooldown: 3.0
+debug_logging: false
+
+# Gesture Mapping (Format: "service,entity_id")
+peace_sign_action: "light.toggle,light.living_room"
+index_pointing_action: "media_player.media_play_pause,media_player.tv"
+thumbs_up_action: "scene.turn_on,scene.movie_night"
+open_hand_action: "light.turn_off,light.all_lights"
+fist_action: "lock.lock,lock.front_door"
+rock_on_action: "script.party_mode"
 ```
 
----
+## 🤝 Contributing
 
-## Konfiguration (Alternativ: JSON)
+Contributions are welcome! If you have ideas for new features, please:
 
-Falls du JSON bevorzugst, kannst du die Datei `gestures.json` verwenden.
+1. Fork the repository.
+2. Create a new branch (`git checkout -b feature/AmazingFeature`).
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`).
+4. Push to the branch (`git push origin feature/AmazingFeature`).
+5. Open a Pull Request.
 
-```json
-{
-    "PEACE_SIGN": {
-        "service": "light.toggle",
-        "entity_id": "light.schreibtisch"
-    }
-}
-```
+## 📄 License
 
-## Unterstützte Gesten
-- `OPEN_HAND`: Alle Finger ausgestreckt.
-- `FIST`: Alle Finger zur Faust geballt.
-- `INDEX_POINTING`: Nur der Zeigefinger zeigt nach oben.
-- `PEACE_SIGN`: Zeige- und Mittelfinger sind ausgestreckt.
-- `THUMBS_UP`: Daumen nach oben (alle anderen zu).
-- `ROCK_ON`: Zeigefinger und kleiner Finger sind ausgestreckt.
-
-## Starten
-```bash
-python hand_tracker.py
-```
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

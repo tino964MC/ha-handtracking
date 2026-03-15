@@ -1,4 +1,0 @@
-PEACE_SIGN:
-  service: "light.toggle"
-  entity_id: "light.elk_bledom"
-  data: {}
