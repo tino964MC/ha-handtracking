@@ -31,12 +31,13 @@ Control your Home Assistant smart home using simple hand gestures captured via a
 3. Add: `https://github.com/tino964MC/ha-handtracking`
 4. Find **Hand Control** and click **Install**.
 
-##  Configuration
+## Configuration
 
-The add-on can be configured directly through the Home Assistant UI
+The add-on can be configured directly through the Home Assistant UI or via `config.yaml`.
 
+### Example Gesture Mapping (Add-on Options)
 
-# Gesture Mapping (Format: "service,entity_id")
+```yaml
 peace_sign_action: "light.toggle,light.living_room"
 index_pointing_action: "media_player.media_play_pause,media_player.tv"
 thumbs_up_action: "scene.turn_on,scene.movie_night"
@@ -45,9 +46,9 @@ fist_action: "lock.lock,lock.front_door"
 rock_on_action: "script.party_mode"
 ```
 
-##  Contributing
+## Contributing
 
-Contributions are welcome! If you have ideas for new features, please:
+Contributions are welcome! If you have ideas for new features or gestures, please:
 
 1. Fork the repository.
 2. Create a new branch (`git checkout -b feature/AmazingFeature`).
@@ -55,6 +56,6 @@ Contributions are welcome! If you have ideas for new features, please:
 4. Push to the branch (`git push origin feature/AmazingFeature`).
 5. Open a Pull Request.
 
-##  License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

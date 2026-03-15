@@ -21,7 +21,7 @@ sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
 logging.basicConfig(
-    level=logging.INFO, # INFO level for production
+    level=logging.INFO, 
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
     handlers=[
@@ -48,11 +48,11 @@ HA_URL    = os.getenv("HA_URL")
 HA_TOKEN  = os.getenv("HA_TOKEN")
 
 # --- STABILITY PARAMETERS ---
-STABIL_FRAMES   = 6     # Frames required for a gesture to be considered stable
+STABIL_FRAMES   = 5     # Reduced for faster reaction (was 6)
 HISTORY_LEN     = 10    # Buffer length for gesture history
 HALTE_DAUER     = 0.8   # Minimum duration (seconds) to hold a gesture
-COOLDOWN_SEK    = 3.0   # Pause after triggering an action (overridden by config)
-BEWEGUNG_MIN    = 0.008 # Minimum motion threshold (0.8% pixel change)
+COOLDOWN_SEK    = 3.0   # Pause after triggering an action
+BEWEGUNG_MIN    = 0.008 # Minimum motion threshold
 ANALYSE_WIDTH   = 320   # Resolution for analysis
 
 # --- MEDIAPIPE ---
@@ -77,7 +77,8 @@ def load_config():
             "global_cooldown": COOLDOWN_SEK,
             "ha_url":    HA_URL,
             "ha_token":  HA_TOKEN,
-            "rtsp_url":  RTSP_URL
+            "rtsp_url":  RTSP_URL,
+            "debug_logging": False
         },
         "gestures": {}
     }
@@ -86,10 +87,18 @@ def load_config():
         try:
             with open(HA_OPTIONS_PATH, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+            
+            # Global Settings
             config["settings"]["global_cooldown"] = float(data.get("global_cooldown", COOLDOWN_SEK))
-            config["settings"]["ha_url"]    = data.get("ha_url",    "http://supervisor/core")
-            config["settings"]["ha_token"]  = data.get("ha_token",  "")
-            config["settings"]["rtsp_url"]  = data.get("rtsp_url",  "")
+            config["settings"]["ha_url"]         = data.get("ha_url",    "http://supervisor/core")
+            config["settings"]["ha_token"]       = data.get("ha_token",  "")
+            config["settings"]["rtsp_url"]       = data.get("rtsp_url",  "")
+            config["settings"]["debug_logging"]  = bool(data.get("debug_logging", False))
+
+            # Enable Debug Level if requested
+            if config["settings"]["debug_logging"]:
+                log.setLevel(logging.DEBUG)
+                log.info("Debug logging ENABLED")
 
             gesture_mapping = {
                 "peace_sign_action":    "PEACE_SIGN",
@@ -106,8 +115,6 @@ def load_config():
                     config["gestures"][name] = {"service": svc, "entity_id": eid, "data": {}}
 
             log.info(f"Loaded {len(config['gestures'])} gesture actions")
-            for name, action in config["gestures"].items():
-                log.info(f"  {name} → {action['service']} | {action['entity_id']}")
         except Exception as e:
             log.error(f"Config error: {e}", exc_info=True)
 
@@ -191,6 +198,9 @@ class GestureFilter:
         since_last = now - self.last_fire.get(gesture, 0)
 
         stable = count >= STABIL_FRAMES
+
+        # Feedback if debug is enabled
+        log.debug(f"Stabilizing {gesture}: {count}/{STABIL_FRAMES} frames | held={duration:.1f}s/{HALTE_DAUER}s")
 
         if stable and duration >= HALTE_DAUER and since_last >= cooldown:
             self.last_fire[gesture] = now
@@ -300,23 +310,17 @@ def main():
     debug_frames_mediapipe= 0
     debug_hand_found      = 0
     debug_last_report     = time.time()
-    DEBUG_INTERVAL        = 15   # Report every 15s
+    DEBUG_INTERVAL        = 30   # Reduced frequency (was 15s)
     
     log_separator()
-    log.info("Hand Control started")
+    log.info("Hand Control started (Optimized v1.3.1)")
     log.info(f"  Add-on mode  : {IS_ADDON}")
     log.info(f"  Headless     : {headless}")
     log.info(f"  RTSP URL     : {rtsp_url}")
     log.info(f"  Cooldown     : {cooldown_val}s")
-    log.info(f"  Stability    : {STABIL_FRAMES}/{HISTORY_LEN} frames")
+    log.info(f"  Stability    : {STABIL_FRAMES}/10 frames")
     log.info(f"  Hold duration: {HALTE_DAUER}s")
-    log.info(f"  Motion min   : {BEWEGUNG_MIN}")
-    if gestures_cfg:
-        log.info(f"  Gestures ({len(gestures_cfg)}):")
-        for name, action in gestures_cfg.items():
-            log.info(f"    {name:20s} → {action['service']} | {action['entity_id']}")
-    else:
-        log.warning("  !! NO GESTURES CONFIGURED — Actions will not be triggered !!")
+    log.info(f"  Loop sync    : 0.1s (10 FPS max analysis)")
     log_separator()
 
     cap = open_camera(rtsp_url)
@@ -337,14 +341,14 @@ def main():
                 prev_gray = None
                 cap = open_camera(rtsp_url)
                 consecutive_fails = 0
-            time.sleep(0.2)
+            time.sleep(0.5)
             continue
 
         consecutive_fails = 0
         frame_count      += 1
         debug_frames_total += 1
 
-        # ── Periodic Status Report ────────────────────────────
+        # ── Periodic Status Report (less frequent in logs) ────
         now = time.time()
         if now - debug_last_report >= DEBUG_INTERVAL:
             log.info(
@@ -352,21 +356,21 @@ def main():
                 f"skipped={debug_frames_skipped} | "
                 f"no_motion={debug_frames_no_move} | "
                 f"mediapipe={debug_frames_mediapipe} | "
-                f"hand_detected={debug_hand_found}"
+                f"hand_found={debug_hand_found}"
             )
-            # Log filter state for debugging
-            history_slice = list(gfilter.history)[-5:]
-            log.debug(f"[Filter] history={history_slice} | active={gfilter.active_gesture}")
-            
             debug_last_report     = now
             debug_frames_skipped  = 0
             debug_frames_no_move  = 0
             debug_frames_mediapipe= 0
             debug_hand_found      = 0
 
-        # ── Dynamic Frame Skipping ────────────────────────────
+        # ── Dynamic Frame Skipping (Improved Speed) ───────────
         idle_time = time.time() - last_hand_t
-        skip_rate = 20 if idle_time > 10 else 6
+        # Skip fewer frames to react faster
+        # 4 frames skip when idle (approx 2.5 analysis per sec at 10fps loop)
+        # 2 frames skip when hand detected (approx 5 analysis per sec)
+        skip_rate = 4 if idle_time > 5 else 2
+        
         if frame_count % skip_rate != 0:
             debug_frames_skipped += 1
             if not headless:
@@ -393,9 +397,9 @@ def main():
                     cv2.imshow("Hand Control", frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         break
-                time.sleep(max(0.2 - (time.time() - loop_start), 0.01))
+                # Smaller sleep to stay responsive
+                time.sleep(max(0.05 - (time.time() - loop_start), 0.01))
                 continue
-            log.debug(f"Motion detected: {moved:.3f}")
 
         prev_gray = gray
 
@@ -409,6 +413,7 @@ def main():
             debug_hand_found += 1
             last_hand_t = time.time()
             gesture     = detect_gesture(results.multi_hand_landmarks[0])
+            
             log.debug(f"Hand detected → Gesture: {gesture}")
 
             if gfilter.check(gesture, cooldown_val):
@@ -422,9 +427,8 @@ def main():
                 else:
                     log.warning(f"Gesture '{gesture}' stable but NOT configured!")
             else:
-                count    = sum(1 for g in gfilter.history if g == gesture)
-                duration = round(time.time() - gfilter.gesture_start_time, 1) if gfilter.gesture_start_time else 0
-                log.debug(f"Filter: {gesture} {count}/{STABIL_FRAMES} | held={duration}s")
+                # Progress debug is already inside gfilter.check()
+                pass
         else:
             gfilter.check("UNKNOWN", cooldown_val)  # Reset timer
 
@@ -438,8 +442,8 @@ def main():
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
 
-        # ── FPS Cap ───────────────────────────────────────────
-        time.sleep(max(0.2 - (time.time() - loop_start), 0.01))
+        # ── FPS Cap (Improved reaction time with 0.1s) ────────
+        time.sleep(max(0.1 - (time.time() - loop_start), 0.01))
 
     cap.release()
     cv2.destroyAllWindows()
