@@ -7,5 +7,3 @@ data/
 options.json
 config.json
 gestures.json
-# Wir ignorieren die lokalen Gesten, damit der User seine eigene Konfiguration behält
-# und nichts versehentlich überschrieben wird, was sensibel sein könnte.
