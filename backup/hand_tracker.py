@@ -4,240 +4,328 @@ import requests
 import time
 import math
 import os
+import sys
 import json
-import numpy as np
-import yaml # PyYAML wird für die Gesten-Konfiguration benötigt
+import logging
+from collections import deque
 from dotenv import load_dotenv
 
-# --- CONFIGURATION ---
 load_dotenv()
 
-# Pfade für Home Assistant Add-on
+# ──────────────────────────────────────────────────────────────
+# LOGGING — Direct output to HA log panel
+# ──────────────────────────────────────────────────────────────
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+log = logging.getLogger("HandControl")
+
+# Suppress MediaPipe / TF warnings
+os.environ["TF_CPP_MIN_LOG_LEVEL"]        = "3"
+os.environ["GLOG_minloglevel"]             = "3"
+os.environ["MEDIAPIPE_DISABLE_GPU"]        = "1"
+logging.getLogger("absl").setLevel(logging.ERROR)
+
+def log_separator():
+    log.info("─" * 50)
+
+# --- CONFIGURATION ---
 HA_OPTIONS_PATH = "/data/options.json"
-HA_CONFIG_GESTURES = "/config/hand_control_pro_gestures.yaml"
-IS_ADDON = os.path.exists(HA_OPTIONS_PATH)
+IS_ADDON        = os.path.exists(HA_OPTIONS_PATH)
 
-# Lokale Fallbacks
-RTSP_URL = os.getenv("RTSP_URL")
-HA_URL = os.getenv("HA_URL")
-HA_TOKEN = os.getenv("HA_TOKEN")
-LOCAL_GESTURES = "gestures.json"
+RTSP_URL  = os.getenv("RTSP_URL")
+HA_URL    = os.getenv("HA_URL")
+HA_TOKEN  = os.getenv("HA_TOKEN")
 
-# Globale Variablen
-last_action_time = 0
-last_executed_gesture = None 
+# --- PARAMETERS ---
+COOLDOWN_SEK    = 3.0   # Pause after triggering an action
+BEWEGUNG_MIN    = 0.008 # Minimum motion threshold
+ANALYSE_WIDTH   = 320   # Resolution for analysis
 
-# --- MEDIAPIPE INITIALISIERUNG ---
-import mediapipe.python.solutions.hands as mp_hands
-import mediapipe.python.solutions.drawing_utils as mp_drawing
-# ---
-# Extreme CPU-Optimierung: model_complexity=0 (Lite)
+# --- MEDIAPIPE ---
+mp_hands    = mp.solutions.hands
+mp_drawing  = mp.solutions.drawing_utils
+
 hands = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=1,
     model_complexity=0,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
+    min_detection_confidence=0.6,
+    min_tracking_confidence=0.6
 )
 
+
+# ──────────────────────────────────────────────────────────────
+# CONFIGURATION LOADING
+# ──────────────────────────────────────────────────────────────
 def load_config():
-    """Lädt Basis-Einstellungen und Gesten direkt vom Home Assistant Add-on Dashboard."""
     config = {
         "settings": {
-            "global_cooldown": 5.0,
-            "ha_url": HA_URL,
-            "ha_token": HA_TOKEN,
-            "rtsp_url": RTSP_URL
+            "global_cooldown": COOLDOWN_SEK,
+            "ha_url":    HA_URL,
+            "ha_token":  HA_TOKEN,
+            "rtsp_url":  RTSP_URL,
+            "debug_logging": False
         },
         "gestures": {}
     }
 
-    # 1. Einstellungen vom Supervisor laden
     if IS_ADDON:
         try:
             with open(HA_OPTIONS_PATH, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                config["settings"]["global_cooldown"] = float(data.get("global_cooldown", 5.0))
-                config["settings"]["ha_url"] = data.get("ha_url", "http://supervisor/core")
-                config["settings"]["ha_token"] = data.get("ha_token", "")
-                config["settings"]["rtsp_url"] = data.get("rtsp_url", "")
+            
+            config["settings"]["global_cooldown"] = float(data.get("global_cooldown", COOLDOWN_SEK))
+            config["settings"]["ha_url"]         = data.get("ha_url",    "http://supervisor/core")
+            config["settings"]["ha_token"]       = data.get("ha_token",  "")
+            config["settings"]["rtsp_url"]       = data.get("rtsp_url",  "")
+            config["settings"]["debug_logging"]  = bool(data.get("debug_logging", False))
 
-                # Gesten aus dem Dashboard parsen (Format: "service,entity_id")
-                gesture_mapping = {
-                    "peace_sign_action": "PEACE_SIGN",
-                    "index_pointing_action": "INDEX_POINTING",
-                    "thumbs_up_action": "THUMBS_UP",
-                    "open_hand_action": "OPEN_HAND",
-                    "fist_action": "FIST",
-                    "rock_on_action": "ROCK_ON"
-                }
+            if config["settings"]["debug_logging"]:
+                log.setLevel(logging.DEBUG)
+                log.info("Debug logging ENABLED")
 
-                for key, gesture_name in gesture_mapping.items():
-                    action_str = data.get(key, "")
-                    if action_str and "," in action_str:
-                        service, entity_id = [x.strip() for x in action_str.split(",", 1)]
-                        config["gestures"][gesture_name] = {
-                            "service": service,
-                            "entity_id": entity_id,
-                            "data": {}
-                        }
-                
-                if config["gestures"]:
-                    print(f"🟢 {len(config['gestures'])} Gesten aus dem Dashboard geladen.")
+            gesture_mapping = {
+                "peace_sign_action":    "PEACE_SIGN",
+                "index_pointing_action":"INDEX_POINTING",
+                "thumbs_up_action":     "THUMBS_UP",
+                "open_hand_action":     "OPEN_HAND",
+                "fist_action":          "FIST",
+                "rock_on_action":       "ROCK_ON"
+            }
+            for key, name in gesture_mapping.items():
+                val = data.get(key, "")
+                if val and "," in val:
+                    svc, eid = [x.strip() for x in val.split(",", 1)]
+                    config["gestures"][name] = {"service": svc, "entity_id": eid, "data": {}}
+
+            log.info(f"Loaded {len(config['gestures'])} gesture actions")
         except Exception as e:
-            print(f"🔴 Add-on Options Fehler: {e}")
-
-    # Fallback für lokale Tests (Env-Variablen)
-    if not config["gestures"] and not IS_ADDON:
-        # Hier könnten wir noch eine lokale config laden, falls nötig
-        pass
+            log.error(f"Config error: {e}", exc_info=True)
 
     return config
 
-def calculate_distance(p1, p2):
-    return math.hypot(p2.x - p1.x, p2.y - p1.y)
 
-def detect_gesture(hand_landmarks):
-    wrist = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
-    def is_open(tip_idx, pip_idx):
-        return calculate_distance(wrist, hand_landmarks.landmark[tip_idx]) > \
-               calculate_distance(wrist, hand_landmarks.landmark[pip_idx])
-    
-    i_o = is_open(mp_hands.HandLandmark.INDEX_FINGER_TIP, mp_hands.HandLandmark.INDEX_FINGER_PIP)
-    m_o = is_open(mp_hands.HandLandmark.MIDDLE_FINGER_TIP, mp_hands.HandLandmark.MIDDLE_FINGER_PIP)
-    r_o = is_open(mp_hands.HandLandmark.RING_FINGER_TIP, mp_hands.HandLandmark.RING_FINGER_PIP)
-    p_o = is_open(mp_hands.HandLandmark.PINKY_TIP, mp_hands.HandLandmark.PINKY_PIP)
-    
-    t_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
-    t_mcp = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_MCP]
-    t_o = calculate_distance(t_tip, hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_MCP]) > \
-          calculate_distance(t_mcp, hand_landmarks.landmark[mp_hands.HandLandmark.PINKY_MCP])
+# ──────────────────────────────────────────────────────────────
+# GESTURE DETECTION
+# ──────────────────────────────────────────────────────────────
+TIPS = [
+    mp_hands.HandLandmark.INDEX_FINGER_TIP,
+    mp_hands.HandLandmark.MIDDLE_FINGER_TIP,
+    mp_hands.HandLandmark.RING_FINGER_TIP,
+    mp_hands.HandLandmark.PINKY_TIP,
+]
+PIPS = [
+    mp_hands.HandLandmark.INDEX_FINGER_PIP,
+    mp_hands.HandLandmark.MIDDLE_FINGER_PIP,
+    mp_hands.HandLandmark.RING_FINGER_PIP,
+    mp_hands.HandLandmark.PINKY_PIP,
+]
 
-    if i_o and m_o and r_o and p_o: return "OPEN_HAND"
-    if not i_o and not m_o and not r_o and not p_o: return "FIST"
-    if i_o and m_o and not r_o and not p_o: return "PEACE_SIGN"
-    if i_o and not m_o and not r_o and not p_o: return "INDEX_POINTING"
-    if t_o and not i_o and not m_o and not r_o and not p_o: return "THUMBS_UP"
-    if i_o and p_o and not m_o and not r_o: return "ROCK_ON"
+def detect_gesture(lm):
+    lms = lm.landmark
+    fingers = [lms[t].y < lms[p].y for t, p in zip(TIPS, PIPS)]
+    i_o, m_o, r_o, k_o = fingers
+
+    wrist = lms[mp_hands.HandLandmark.WRIST]
+    t_tip = lms[mp_hands.HandLandmark.THUMB_TIP]
+    t_mcp = lms[mp_hands.HandLandmark.THUMB_MCP]
+    t_o   = math.hypot(t_tip.x - wrist.x, t_tip.y - wrist.y) > \
+            math.hypot(t_mcp.x - wrist.x, t_mcp.y - wrist.y)
+
+    if     i_o and  m_o and  r_o and  k_o:              return "OPEN_HAND"
+    if not i_o and not m_o and not r_o and not k_o:      return "FIST"
+    if     i_o and  m_o and not r_o and not k_o:         return "PEACE_SIGN"
+    if     i_o and not m_o and not r_o and not k_o:      return "INDEX_POINTING"
+    if     t_o and not i_o and not m_o and not r_o and not k_o: return "THUMBS_UP"
+    if     i_o and  k_o and not m_o and not r_o:         return "ROCK_ON"
     return "UNKNOWN"
 
-def call_ha_service(service, entity_id, config, data=None):
-    settings = config.get("settings", {})
-    url_base = settings.get("ha_url", HA_URL)
-    token = settings.get("ha_token", HA_TOKEN)
-    if token == "" and IS_ADDON:
+
+# ──────────────────────────────────────────────────────────────
+# HOME ASSISTANT API
+# ──────────────────────────────────────────────────────────────
+def call_ha(service, entity_id, config, data=None):
+    settings  = config.get("settings", {})
+    url_base  = settings.get("ha_url",   HA_URL)
+    token     = settings.get("ha_token", HA_TOKEN)
+
+    if not token and IS_ADDON:
         token = os.getenv("SUPERVISOR_TOKEN", "")
-    if not service or not entity_id: return False
-    domain, s_name = service.split(".")
-    url = f"{url_base}/api/services/{domain}/{s_name}"
+    if not service or not entity_id:
+        return False
+
+    domain, sname = service.split(".", 1)
+    url     = f"{url_base}/api/services/{domain}/{sname}"
     headers = {"Authorization": f"Bearer {token}", "content-type": "application/json"}
     payload = {"entity_id": entity_id, **(data or {})}
+
     try:
-        requests.post(url, headers=headers, json=payload, timeout=5)
-        return True
-    except: return False
+        r = requests.post(url, headers=headers, json=payload, timeout=5)
+        if r.status_code < 300:
+            log.info(f"HA OK [{r.status_code}] {service} → {entity_id}")
+            return True
+        else:
+            log.warning(f"HA HTTP {r.status_code} at {service} → {entity_id}")
+            return False
+    except Exception as e:
+        log.error(f"HA Error: {e}")
+        return False
 
-def main():
-    global last_executed_gesture, last_action_time
-    config = load_config()
-    settings = config.get("settings", {})
-    gestures_config = config.get("gestures", {})
-    cooldown_val = settings.get("global_cooldown", 5.0)
-    rtsp_url = settings.get("rtsp_url", RTSP_URL)
-    headless = IS_ADDON or os.getenv("DISPLAY") is None
 
+# ──────────────────────────────────────────────────────────────
+# CAMERA WITH AUTO-RECONNECT
+# ──────────────────────────────────────────────────────────────
+def open_camera(rtsp_url):
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-    cap = cv2.VideoCapture(rtsp_url)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    attempt  = 0
+    backoff  = [3, 5, 10, 20, 30, 60]
+
+    while True:
+        attempt += 1
+        wait = backoff[min(attempt - 1, len(backoff) - 1)]
+        log.info(f"Connecting to camera (Attempt {attempt}) → {rtsp_url}")
+        try:
+            cap = cv2.VideoCapture(rtsp_url)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            if cap.isOpened():
+                log.info("Camera connected ✓")
+                return cap
+            cap.release()
+        except Exception as e:
+            log.error(f"Camera error: {e}")
+        log.warning(f"Camera not reachable — Retrying in {wait}s")
+        time.sleep(wait)
+
+
+# ──────────────────────────────────────────────────────────────
+# MAIN LOOP
+# ──────────────────────────────────────────────────────────────
+def main():
+    config        = load_config()
+    settings      = config["settings"]
+    gestures_cfg  = config["gestures"]
+    cooldown_val  = settings.get("global_cooldown", COOLDOWN_SEK)
+    rtsp_url      = settings.get("rtsp_url", RTSP_URL)
+    headless      = IS_ADDON or not os.environ.get("DISPLAY")
+
+    # Simple cooldown map for instant triggering
+    last_trigger_times = {}
+
+    frame_count   = 0
+    prev_gray     = None
+    last_hand_t   = time.time()
+    consecutive_fails = 0
     
-    if not cap.isOpened():
-        print(f"🔴 Fehler: Kamera nicht erreichbar.")
-        return
+    debug_last_report     = time.time()
+    DEBUG_INTERVAL        = 30
+    
+    log_separator()
+    log.info("Hand Control started")
+    log.info(f"  Add-on mode  : {IS_ADDON}")
+    log.info(f"  Headless     : {headless}")
+    log.info(f"  RTSP URL     : {rtsp_url}")
+    log.info(f"  Cooldown     : {cooldown_val}s")
+    log_separator()
 
-    print("🟢 Ultra CPU-Optimierung aktiv (Motion-Aware, 5 FPS Limit, 320px Res)")
+    cap = open_camera(rtsp_url)
 
-    frame_count = 0
-    prev_gray = None
-    last_hand_time = 0
-    while cap.isOpened():
+    while True:
         loop_start = time.time()
         success, frame = cap.read()
-        if not success: continue
-        
-        frame_count += 1
-        
-        # 1. Dynamischer Frame-Skip
-        # Wenn wir seit 10s keine Hand gesehen haben, verarbeiten wir nur jeden 20. Frame
-        # Sonst jeden 10. Frame (reicht für Gesten völlig aus)
-        idle_time = time.time() - last_hand_time
-        skip_rate = 20 if idle_time > 10 else 10
+
+        if not success:
+            consecutive_fails += 1
+            if consecutive_fails >= 5:
+                log.warning("Connection lost — Reconnecting...")
+                cap.release()
+                prev_gray = None
+                cap = open_camera(rtsp_url)
+                consecutive_fails = 0
+            time.sleep(0.5)
+            continue
+
+        consecutive_fails = 0
+        frame_count      += 1
+
+        # Periodic status heartbeat
+        now = time.time()
+        if now - debug_last_report >= DEBUG_INTERVAL:
+            log.info("[Heartbeat] System running | Hand detected recently: %s" % (now - last_hand_t < 10))
+            debug_last_report = now
+
+        # Dynamic Frame Skipping for high responsiveness
+        idle_time = now - last_hand_t
+        skip_rate = 4 if idle_time > 5 else 2
         
         if frame_count % skip_rate != 0:
             if not headless:
-                cv2.imshow('Smart Home Hand Controller Pro', frame)
+                cv2.imshow("Hand Control", frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'): break
             continue
 
-        # 2. Resolution Scaling (320px)
-        h, w = frame.shape[:2]
-        analysis_scale = 320 / w
-        analysis_frame = cv2.resize(frame, (0, 0), fx=analysis_scale, fy=analysis_scale)
-        gray = cv2.cvtColor(analysis_frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+        h, w   = frame.shape[:2]
+        scale  = ANALYSE_WIDTH / w
+        small  = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
+        gray   = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (21, 21), 0)
 
-        # 3. Simple Motion Detection Check
-        # Wenn sich im Bild gar nichts bewegt, sparen wir uns MediaPipe komplett
+        # Motion check
         if prev_gray is not None:
-            frame_delta = cv2.absdiff(prev_gray, gray)
-            thresh = cv2.threshold(frame_delta, 25, 255, cv2.THRESH_BINARY)[1]
-            if cv2.countNonZero(thresh) < (analysis_frame.size * 0.005): # Weniger als 0.5% Änderung
+            delta  = cv2.absdiff(prev_gray, gray)
+            thr    = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)[1]
+            moved  = cv2.countNonZero(thr) / gray.size
+            if moved < BEWEGUNG_MIN:
                 prev_gray = gray
-                continue # Skip MediaPipe
-        
+                if not headless:
+                    cv2.imshow("Hand Control", frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'): break
+                time.sleep(max(0.05 - (time.time() - loop_start), 0.01))
+                continue
+
         prev_gray = gray
-        results = hands.process(cv2.cvtColor(analysis_frame, cv2.COLOR_BGR2RGB))
-        
-        curr_t = time.time()
-        time_diff = curr_t - last_action_time
-        in_cd = time_diff < cooldown_val
+        rgb       = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
+        results   = hands.process(rgb)
+
         gesture = "UNKNOWN"
-
         if results.multi_hand_landmarks:
-            last_hand_time = curr_t # Hand gesehen, Idle-Timer zurücksetzen
-            for hl in results.multi_hand_landmarks:
-                gesture = detect_gesture(hl)
-                if gesture != "UNKNOWN" and gesture in gestures_config:
-                    if not in_cd and gesture != last_executed_gesture:
-                        action = gestures_config[gesture]
-                        if call_ha_service(action["service"], action["entity_id"], config, action.get("data")):
-                            print(f"🎬 Geste: {gesture}")
-                            last_executed_gesture = gesture
-                            last_action_time = curr_t
-        
-        if gesture == "UNKNOWN":
-            last_executed_gesture = None
+            last_hand_t = time.time()
+            gesture     = detect_gesture(results.multi_hand_landmarks[0])
+            log.debug(f"Hand detected → Gesture: {gesture}")
 
+            if gesture in gestures_cfg:
+                now = time.time()
+                last_fire = last_trigger_times.get(gesture, 0)
+                
+                # Instant trigger if cooldown expired
+                if now - last_fire >= cooldown_val:
+                    action = gestures_cfg[gesture]
+                    log.info(f"INSTANT ACTION: {gesture} → {action['service']}")
+                    call_ha(action["service"], action["entity_id"], config, action.get("data"))
+                    last_trigger_times[gesture] = now
+                else:
+                    log.debug(f"Gesture {gesture} detected but cooldown active (wait {round(cooldown_val - (now - last_fire), 1)}s)")
+
+        # Display
         if not headless:
-            ui_status = "BEREIT" if gesture == "UNKNOWN" else f"GESTE: {gesture}"
-            ui_color = (0, 255, 0) if not in_cd and gesture != "UNKNOWN" else (0, 165, 255)
-            cv2.putText(frame, "HAND CONTROL PRO", (20, 35), cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 1)
-            cv2.putText(frame, ui_status, (w - 250, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.5, ui_color, 1)
-            cv2.imshow('Smart Home Hand Controller Pro', frame)
+            color  = (0, 255, 0) if gesture != "UNKNOWN" else (100, 100, 100)
+            cv2.putText(frame, gesture, (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
+            cv2.imshow("Hand Control", frame)
             if cv2.waitKey(1) & 0xFF == ord('q'): break
-        
-        # 4. FPS Cap: Max 5 Mal pro Sekunde drosseln (reicht für Smart Home locker)
-        elapsed = time.time() - loop_start
-        wait = max(0.2 - elapsed, 0.02) 
-        time.sleep(wait)
+
+        # Maintain 10 FPS analysis loop
+        time.sleep(max(0.1 - (time.time() - loop_start), 0.01))
 
     cap.release()
     cv2.destroyAllWindows()
-
-if __name__ == "__main__":
-    main()
-
-    cap.release()
-    cv2.destroyAllWindows()
+    hands.close()
 
 if __name__ == "__main__":
     main()

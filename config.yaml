@@ -1,6 +1,6 @@
 name: "Hand Control"
 description: "Control Home Assistant using hand gestures via RTSP camera stream."
-version: "1.3.2"
+version: "1.3.3"
 slug: "hand_control"
 init: false
 arch:
@@ -18,18 +18,25 @@ options:
   ha_url: "http://homeassistant.local:8123"
   ha_token: "YOUR_LONG_LIVED_ACCESS_TOKEN"
   global_cooldown: 3.0
+  combo_window: 2.0
   debug_logging: false
-  peace_sign_action: "light.toggle,light.living_room"
-  index_pointing_action: "media_player.media_play_pause,media_player.tv"
-  thumbs_up_action: "scene.turn_on,scene.movie_night"
-  open_hand_action: "light.turn_off,light.all_lights"
-  fist_action: "lock.lock,lock.front_door"
-  rock_on_action: "script.party_mode"
+  peace_sign_action: ""
+  index_pointing_action: ""
+  thumbs_up_action: ""
+  open_hand_action: ""
+  fist_action: ""
+  rock_on_action: ""
+  combo_1_action: ""
+  combo_2_action: ""
+  combo_3_action: ""
+  combo_4_action: ""
+  combo_5_action: ""
 schema:
   rtsp_url: str
   ha_url: str
   ha_token: str
   global_cooldown: float
+  combo_window: float
   debug_logging: bool
   peace_sign_action: str?
   index_pointing_action: str?
@@ -37,3 +44,8 @@ schema:
   open_hand_action: str?
   fist_action: str?
   rock_on_action: str?
+  combo_1_action: str?
+  combo_2_action: str?
+  combo_3_action: str?
+  combo_4_action: str?
+  combo_5_action: str?

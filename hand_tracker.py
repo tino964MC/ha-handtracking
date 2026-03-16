@@ -13,47 +13,44 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ──────────────────────────────────────────────────────────────
-# LOGGING — Direct output to HA log panel
+# LOGGING
 # ──────────────────────────────────────────────────────────────
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
 logging.basicConfig(
-    level=logging.INFO, 
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 log = logging.getLogger("HandControl")
 
-# Suppress MediaPipe / TF warnings
-os.environ["TF_CPP_MIN_LOG_LEVEL"]        = "3"
-os.environ["GLOG_minloglevel"]             = "3"
-os.environ["MEDIAPIPE_DISABLE_GPU"]        = "1"
+os.environ["TF_CPP_MIN_LOG_LEVEL"]   = "3"
+os.environ["GLOG_minloglevel"]        = "3"
+os.environ["MEDIAPIPE_DISABLE_GPU"]   = "1"
+os.environ["QT_QPA_PLATFORM"]         = "offscreen"
+os.environ["DISPLAY"]                 = ""
 logging.getLogger("absl").setLevel(logging.ERROR)
 
-def log_separator():
+def log_sep():
     log.info("─" * 50)
 
-# --- CONFIGURATION ---
+# ──────────────────────────────────────────────────────────────
+# CONFIGURATION
+# ──────────────────────────────────────────────────────────────
 HA_OPTIONS_PATH = "/data/options.json"
 IS_ADDON        = os.path.exists(HA_OPTIONS_PATH)
-
 RTSP_URL  = os.getenv("RTSP_URL")
 HA_URL    = os.getenv("HA_URL")
 HA_TOKEN  = os.getenv("HA_TOKEN")
 
-# --- PARAMETERS ---
-COOLDOWN_SEK    = 3.0   # Pause after triggering an action
-BEWEGUNG_MIN    = 0.008 # Minimum motion threshold
-ANALYSE_WIDTH   = 320   # Resolution for analysis
+COOLDOWN_SEK  = 3.0
+BEWEGUNG_MIN  = 0.008
+ANALYSE_WIDTH = 320
+COMBO_WINDOW  = 2.0   # Sekunden zwischen zwei Gesten für eine Combo
 
-# --- MEDIAPIPE ---
-mp_hands    = mp.solutions.hands
-mp_drawing  = mp.solutions.drawing_utils
-
+mp_hands = mp.solutions.hands
 hands = mp_hands.Hands(
     static_image_mode=False,
     max_num_hands=1,
@@ -63,53 +60,80 @@ hands = mp_hands.Hands(
 )
 
 
-# ──────────────────────────────────────────────────────────────
-# CONFIGURATION LOADING
-# ──────────────────────────────────────────────────────────────
 def load_config():
     config = {
         "settings": {
             "global_cooldown": COOLDOWN_SEK,
-            "ha_url":    HA_URL,
-            "ha_token":  HA_TOKEN,
-            "rtsp_url":  RTSP_URL,
-            "debug_logging": False
+            "combo_window":    COMBO_WINDOW,
+            "ha_url":          HA_URL,
+            "ha_token":        HA_TOKEN,
+            "rtsp_url":        RTSP_URL,
+            "debug_logging":   False
         },
-        "gestures": {}
+        "gestures": {},   # einzelne Gesten
+        "combos":   {}    # Combo-Gesten: "GESTE1+GESTE2" → action
     }
 
     if IS_ADDON:
         try:
             with open(HA_OPTIONS_PATH, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            
+
             config["settings"]["global_cooldown"] = float(data.get("global_cooldown", COOLDOWN_SEK))
-            config["settings"]["ha_url"]         = data.get("ha_url",    "http://supervisor/core")
-            config["settings"]["ha_token"]       = data.get("ha_token",  "")
-            config["settings"]["rtsp_url"]       = data.get("rtsp_url",  "")
-            config["settings"]["debug_logging"]  = bool(data.get("debug_logging", False))
+            config["settings"]["combo_window"]    = float(data.get("combo_window",    COMBO_WINDOW))
+            config["settings"]["ha_url"]          = data.get("ha_url",    "http://supervisor/core")
+            config["settings"]["ha_token"]        = data.get("ha_token",  "")
+            config["settings"]["rtsp_url"]        = data.get("rtsp_url",  "")
+            config["settings"]["debug_logging"]   = bool(data.get("debug_logging", False))
 
             if config["settings"]["debug_logging"]:
                 log.setLevel(logging.DEBUG)
                 log.info("Debug logging ENABLED")
 
-            gesture_mapping = {
-                "peace_sign_action":    "PEACE_SIGN",
-                "index_pointing_action":"INDEX_POINTING",
-                "thumbs_up_action":     "THUMBS_UP",
-                "open_hand_action":     "OPEN_HAND",
-                "fist_action":          "FIST",
-                "rock_on_action":       "ROCK_ON"
+            # ── Einzelne Gesten ───────────────────────────────
+            single_map = {
+                "peace_sign_action":     "PEACE_SIGN",
+                "index_pointing_action": "INDEX_POINTING",
+                "thumbs_up_action":      "THUMBS_UP",
+                "open_hand_action":      "OPEN_HAND",
+                "fist_action":           "FIST",
+                "rock_on_action":        "ROCK_ON"
             }
-            for key, name in gesture_mapping.items():
+            for key, name in single_map.items():
                 val = data.get(key, "")
                 if val and "," in val:
                     svc, eid = [x.strip() for x in val.split(",", 1)]
                     config["gestures"][name] = {"service": svc, "entity_id": eid, "data": {}}
 
-            log.info(f"Loaded {len(config['gestures'])} gesture actions")
+            # ── Combos ────────────────────────────────────────
+            # Format im Dashboard: "GESTE1+GESTE2,service,entity_id"
+            # Beispiel: "INDEX_POINTING+OPEN_HAND,light.toggle,light.wohnzimmer"
+            for i in range(1, 6):
+                val = data.get(f"combo_{i}_action", "")
+                if not val or val.count(",") < 1:
+                    continue
+                # Trenne Combo-Key von service,entity
+                parts      = val.split(",", 2)
+                if len(parts) < 3:
+                    continue
+                combo_key  = parts[0].strip().upper()   # z.B. "INDEX_POINTING+OPEN_HAND"
+                svc        = parts[1].strip()
+                eid        = parts[2].strip()
+                if "+" not in combo_key:
+                    log.warning(f"Combo {i}: kein '+' gefunden in '{combo_key}' — übersprungen")
+                    continue
+                config["combos"][combo_key] = {"service": svc, "entity_id": eid, "data": {}}
+
+            log.info(f"Einzelgesten geladen : {len(config['gestures'])}")
+            for n, a in config["gestures"].items():
+                log.info(f"  {n:20s} → {a['service']} | {a['entity_id']}")
+
+            log.info(f"Combos geladen       : {len(config['combos'])}")
+            for n, a in config["combos"].items():
+                log.info(f"  {n:30s} → {a['service']} | {a['entity_id']}")
+
         except Exception as e:
-            log.error(f"Config error: {e}", exc_info=True)
+            log.error(f"Config-Fehler: {e}", exc_info=True)
 
     return config
 
@@ -131,7 +155,7 @@ PIPS = [
 ]
 
 def detect_gesture(lm):
-    lms = lm.landmark
+    lms     = lm.landmark
     fingers = [lms[t].y < lms[p].y for t, p in zip(TIPS, PIPS)]
     i_o, m_o, r_o, k_o = fingers
 
@@ -141,22 +165,72 @@ def detect_gesture(lm):
     t_o   = math.hypot(t_tip.x - wrist.x, t_tip.y - wrist.y) > \
             math.hypot(t_mcp.x - wrist.x, t_mcp.y - wrist.y)
 
-    if     i_o and  m_o and  r_o and  k_o:              return "OPEN_HAND"
-    if not i_o and not m_o and not r_o and not k_o:      return "FIST"
-    if     i_o and  m_o and not r_o and not k_o:         return "PEACE_SIGN"
-    if     i_o and not m_o and not r_o and not k_o:      return "INDEX_POINTING"
-    if     t_o and not i_o and not m_o and not r_o and not k_o: return "THUMBS_UP"
-    if     i_o and  k_o and not m_o and not r_o:         return "ROCK_ON"
+    if     i_o and  m_o and  r_o and  k_o:                          return "OPEN_HAND"
+    if not i_o and not m_o and not r_o and not k_o:                  return "FIST"
+    if     i_o and  m_o and not r_o and not k_o:                     return "PEACE_SIGN"
+    if     i_o and not m_o and not r_o and not k_o:                  return "INDEX_POINTING"
+    if     t_o and not i_o and not m_o and not r_o and not k_o:      return "THUMBS_UP"
+    if     i_o and  k_o and not m_o and not r_o:                     return "ROCK_ON"
     return "UNKNOWN"
 
 
 # ──────────────────────────────────────────────────────────────
-# HOME ASSISTANT API
+# COMBO DETECTOR
+# Merkt sich die letzte N erkannte Geste mit Timestamp
+# Prüft ob eine Combo-Sequenz erfüllt wurde
+# ──────────────────────────────────────────────────────────────
+class ComboDetector:
+    def __init__(self, combo_window):
+        self.window      = combo_window
+        # Ring-Buffer: (geste, timestamp) der letzten 3 stabilen Gesten
+        self.history     = deque(maxlen=3)
+        self.last_stable = None   # letzte stabile Geste (kein UNKNOWN)
+
+    def update(self, gesture):
+        """
+        Aufgerufen bei jeder erkannten Geste.
+        Gibt die Combo-Key zurück wenn eine Combo erkannt wurde, sonst None.
+        """
+        now = time.time()
+
+        if gesture == "UNKNOWN":
+            # UNKNOWN nach einer Geste = Geste abgeschlossen → bereit für nächste
+            if self.last_stable is not None:
+                self.last_stable = None
+            return None
+
+        # Geste stabil halten — erst in History wenn sie sich von letzter unterscheidet
+        if gesture == self.last_stable:
+            return None   # gleiche Geste wird gehalten — nicht als neue zählen
+
+        # Neue Geste erkannt
+        self.last_stable = gesture
+        self.history.append((gesture, now))
+        log.debug(f"Combo-History: {[(g, round(now-t,1)) for g,t in self.history]}")
+
+        # Prüfe ob die letzten 2 Gesten eine Combo bilden
+        if len(self.history) >= 2:
+            g1, t1 = self.history[-2]
+            g2, t2 = self.history[-1]
+            if (t2 - t1) <= self.window:
+                combo_key = f"{g1}+{g2}"
+                log.debug(f"Combo-Kandidat: {combo_key} ({round(t2-t1,1)}s)")
+                return combo_key
+
+        return None
+
+    def reset(self):
+        self.history.clear()
+        self.last_stable = None
+
+
+# ──────────────────────────────────────────────────────────────
+# HOME ASSISTANT
 # ──────────────────────────────────────────────────────────────
 def call_ha(service, entity_id, config, data=None):
-    settings  = config.get("settings", {})
-    url_base  = settings.get("ha_url",   HA_URL)
-    token     = settings.get("ha_token", HA_TOKEN)
+    settings = config.get("settings", {})
+    url_base = settings.get("ha_url",   HA_URL)
+    token    = settings.get("ha_token", HA_TOKEN)
 
     if not token and IS_ADDON:
         token = os.getenv("SUPERVISOR_TOKEN", "")
@@ -173,68 +247,64 @@ def call_ha(service, entity_id, config, data=None):
         if r.status_code < 300:
             log.info(f"HA OK [{r.status_code}] {service} → {entity_id}")
             return True
-        else:
-            log.warning(f"HA HTTP {r.status_code} at {service} → {entity_id}")
-            return False
+        log.warning(f"HA HTTP {r.status_code}: {r.text[:100]}")
+        return False
     except Exception as e:
-        log.error(f"HA Error: {e}")
+        log.error(f"HA Fehler: {e}")
         return False
 
 
 # ──────────────────────────────────────────────────────────────
-# CAMERA WITH AUTO-RECONNECT
+# CAMERA
 # ──────────────────────────────────────────────────────────────
 def open_camera(rtsp_url):
     os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-    attempt  = 0
-    backoff  = [3, 5, 10, 20, 30, 60]
-
+    attempt = 0
+    backoff = [3, 5, 10, 20, 30, 60]
     while True:
         attempt += 1
         wait = backoff[min(attempt - 1, len(backoff) - 1)]
-        log.info(f"Connecting to camera (Attempt {attempt}) → {rtsp_url}")
-        try:
-            cap = cv2.VideoCapture(rtsp_url)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            if cap.isOpened():
-                log.info("Camera connected ✓")
-                return cap
-            cap.release()
-        except Exception as e:
-            log.error(f"Camera error: {e}")
-        log.warning(f"Camera not reachable — Retrying in {wait}s")
+        log.info(f"Verbinde Kamera (Versuch {attempt}) ...")
+        cap = cv2.VideoCapture(rtsp_url)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if cap.isOpened():
+            log.info("Kamera verbunden ✓")
+            return cap
+        cap.release()
+        log.warning(f"Nicht erreichbar — warte {wait}s")
         time.sleep(wait)
 
 
 # ──────────────────────────────────────────────────────────────
-# MAIN LOOP
+# MAIN
 # ──────────────────────────────────────────────────────────────
 def main():
-    config        = load_config()
-    settings      = config["settings"]
-    gestures_cfg  = config["gestures"]
-    cooldown_val  = settings.get("global_cooldown", COOLDOWN_SEK)
-    rtsp_url      = settings.get("rtsp_url", RTSP_URL)
-    headless      = IS_ADDON or not os.environ.get("DISPLAY")
+    config       = load_config()
+    settings     = config["settings"]
+    gestures_cfg = config["gestures"]
+    combos_cfg   = config["combos"]
+    cooldown_val = settings.get("global_cooldown", COOLDOWN_SEK)
+    combo_window = settings.get("combo_window",    COMBO_WINDOW)
+    rtsp_url     = settings.get("rtsp_url", RTSP_URL)
+    headless     = IS_ADDON or not os.environ.get("DISPLAY")
 
-    # Simple cooldown map for instant triggering
-    last_trigger_times = {}
+    last_trigger_times = {}   # geste/combo → letzter fire timestamp
+    combo_detector     = ComboDetector(combo_window)
 
-    frame_count   = 0
-    prev_gray     = None
-    last_hand_t   = time.time()
+    frame_count       = 0
+    prev_gray         = None
+    last_hand_t       = time.time()
     consecutive_fails = 0
-    
-    debug_last_report     = time.time()
-    DEBUG_INTERVAL        = 30
-    
-    log_separator()
-    log.info("Hand Control started")
-    log.info(f"  Add-on mode  : {IS_ADDON}")
+    debug_last_report = time.time()
+    DEBUG_INTERVAL    = 30
+
+    log_sep()
+    log.info("Hand Control gestartet")
     log.info(f"  Headless     : {headless}")
-    log.info(f"  RTSP URL     : {rtsp_url}")
+    log.info(f"  RTSP         : {rtsp_url}")
     log.info(f"  Cooldown     : {cooldown_val}s")
-    log_separator()
+    log.info(f"  Combo-Fenster: {combo_window}s")
+    log_sep()
 
     cap = open_camera(rtsp_url)
 
@@ -242,10 +312,11 @@ def main():
         loop_start = time.time()
         success, frame = cap.read()
 
+        # ── Reconnect ─────────────────────────────────────────
         if not success:
             consecutive_fails += 1
             if consecutive_fails >= 5:
-                log.warning("Connection lost — Reconnecting...")
+                log.warning("Verbindung verloren — Reconnect ...")
                 cap.release()
                 prev_gray = None
                 cap = open_camera(rtsp_url)
@@ -256,76 +327,88 @@ def main():
         consecutive_fails = 0
         frame_count      += 1
 
-        # Periodic status heartbeat
+        # ── Heartbeat ─────────────────────────────────────────
         now = time.time()
         if now - debug_last_report >= DEBUG_INTERVAL:
-            log.info("[Heartbeat] System running | Hand detected recently: %s" % (now - last_hand_t < 10))
+            log.info(f"[Heartbeat] läuft | Hand zuletzt vor {round(now - last_hand_t)}s")
             debug_last_report = now
 
-        # Dynamic Frame Skipping for high responsiveness
+        # ── Frame-Skip ────────────────────────────────────────
         idle_time = now - last_hand_t
         skip_rate = 4 if idle_time > 5 else 2
-        
         if frame_count % skip_rate != 0:
-            if not headless:
-                cv2.imshow("Hand Control", frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'): break
             continue
 
-        h, w   = frame.shape[:2]
-        scale  = ANALYSE_WIDTH / w
-        small  = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
-        gray   = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (21, 21), 0)
+        # ── Analyse-Frame ─────────────────────────────────────
+        h, w  = frame.shape[:2]
+        scale = ANALYSE_WIDTH / w
+        small = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
+        gray  = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (21, 21), 0)
 
-        # Motion check
-        if prev_gray is not None:
+        # ── Bewegungsdetektion ────────────────────────────────
+        hand_kuerzelich = (time.time() - last_hand_t) < 3.0
+        if not hand_kuerzelich and prev_gray is not None:
             delta  = cv2.absdiff(prev_gray, gray)
-            thr    = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)[1]
-            moved  = cv2.countNonZero(thr) / gray.size
+            moved  = cv2.countNonZero(cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)[1]) / gray.size
             if moved < BEWEGUNG_MIN:
                 prev_gray = gray
-                if not headless:
-                    cv2.imshow("Hand Control", frame)
-                    if cv2.waitKey(1) & 0xFF == ord('q'): break
                 time.sleep(max(0.05 - (time.time() - loop_start), 0.01))
                 continue
 
         prev_gray = gray
-        rgb       = cv2.cvtColor(small, cv2.COLOR_BGR2RGB)
-        results   = hands.process(rgb)
 
+        # ── MediaPipe ─────────────────────────────────────────
+        results = hands.process(cv2.cvtColor(small, cv2.COLOR_BGR2RGB))
         gesture = "UNKNOWN"
+
         if results.multi_hand_landmarks:
             last_hand_t = time.time()
             gesture     = detect_gesture(results.multi_hand_landmarks[0])
-            log.debug(f"Hand detected → Gesture: {gesture}")
+            log.debug(f"Geste: {gesture}")
 
-            if gesture in gestures_cfg:
-                now = time.time()
+        # ── Combo-Check ───────────────────────────────────────
+        combo_key = combo_detector.update(gesture)
+
+        if combo_key and combo_key in combos_cfg:
+            now        = time.time()
+            last_fire  = last_trigger_times.get(combo_key, 0)
+            if now - last_fire >= cooldown_val:
+                action = combos_cfg[combo_key]
+                log.info(f"COMBO: {combo_key} → {action['service']} | {action['entity_id']}")
+                call_ha(action["service"], action["entity_id"], config, action.get("data"))
+                last_trigger_times[combo_key] = now
+                combo_detector.reset()   # History leeren nach Combo-Fire
+            else:
+                log.debug(f"Combo {combo_key} erkannt aber Cooldown aktiv")
+
+        # ── Einzelgesten-Check (nur wenn keine Combo gefeuert) ─
+        elif gesture != "UNKNOWN" and gesture in gestures_cfg:
+            # Prüfe ob diese Geste Teil einer konfigurierten Combo sein könnte
+            # Wenn ja → warte kurz bevor wir einzeln auslösen
+            geste_in_combo = any(
+                gesture in combo_key.split("+")
+                for combo_key in combos_cfg
+            )
+
+            if geste_in_combo:
+                # Geste könnte noch eine Combo einleiten → kleines Delay
+                # Erst nach combo_window ohne Folge-Geste als einzeln auslösen
+                pass   # combo_detector entscheidet — wir feuern nicht sofort
+            else:
+                now       = time.time()
                 last_fire = last_trigger_times.get(gesture, 0)
-                
-                # Instant trigger if cooldown expired
                 if now - last_fire >= cooldown_val:
                     action = gestures_cfg[gesture]
-                    log.info(f"INSTANT ACTION: {gesture} → {action['service']}")
+                    log.info(f"GESTE: {gesture} → {action['service']} | {action['entity_id']}")
                     call_ha(action["service"], action["entity_id"], config, action.get("data"))
                     last_trigger_times[gesture] = now
-                else:
-                    log.debug(f"Gesture {gesture} detected but cooldown active (wait {round(cooldown_val - (now - last_fire), 1)}s)")
 
-        # Display
-        if not headless:
-            color  = (0, 255, 0) if gesture != "UNKNOWN" else (100, 100, 100)
-            cv2.putText(frame, gesture, (20, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.0, color, 2)
-            cv2.imshow("Hand Control", frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'): break
-
-        # Maintain 10 FPS analysis loop
+        # ── FPS-Cap ───────────────────────────────────────────
         time.sleep(max(0.1 - (time.time() - loop_start), 0.01))
 
     cap.release()
-    cv2.destroyAllWindows()
     hands.close()
+
 
 if __name__ == "__main__":
     main()
