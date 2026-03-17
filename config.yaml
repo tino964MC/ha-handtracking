@@ -1,6 +1,6 @@
 name: "Hand Control"
 description: "Control Home Assistant using hand gestures via RTSP camera stream."
-version: "1.5.1"
+version: "1.5.2"
 slug: "hand_control"
 init: false
 arch:
