@@ -1,6 +1,6 @@
 name: "Hand Control"
 description: "Control Home Assistant using hand gestures via RTSP camera stream."
-version: "1.4.9"
+version: "1.5.0"
 slug: "hand_control"
 init: false
 arch:
@@ -27,7 +27,6 @@ options:
   live_preview: false
   min_detection_confidence: 0.6
   min_tracking_confidence: 0.6
-  motion_threshold: 0.008
   peace_sign_action: ""
   index_pointing_action: ""
   thumbs_up_action: ""
@@ -51,7 +50,6 @@ schema:
   live_preview: bool
   min_detection_confidence: float
   min_tracking_confidence: float
-  motion_threshold: float
   peace_sign_action: str?
   index_pointing_action: str?
   thumbs_up_action: str?
