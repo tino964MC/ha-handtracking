@@ -7,7 +7,10 @@ import os
 import sys
 import json
 import logging
+import threading
 from collections import deque
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from socketserver import ThreadingMixIn
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -37,6 +40,85 @@ def log_sep():
     log.info("─" * 50)
 
 # ──────────────────────────────────────────────────────────────
+# LIVE PREVIEW — MJPEG Stream Server
+# Aufrufbar unter http://<ha-ip>:8765
+# In HA als Generic Camera: stream_source: http://localhost:8765/stream
+# ──────────────────────────────────────────────────────────────
+class PreviewState:
+    """Shared state zwischen Main-Loop und HTTP-Server."""
+    def __init__(self):
+        self.frame     = None   # aktuelles JPEG-Bytes
+        self.lock      = threading.Lock()
+        self.enabled   = False
+
+preview = PreviewState()
+
+class MJPEGHandler(BaseHTTPRequestHandler):
+    def log_message(self, fmt, *args):
+        pass   # HTTP-Requests nicht ins Log
+
+    def do_GET(self):
+        if self.path == "/stream":
+            self.send_response(200)
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            try:
+                while True:
+                    with preview.lock:
+                        frame = preview.frame
+                    if frame is not None:
+                        self.wfile.write(b"--frame\r\n")
+                        self.wfile.write(b"Content-Type: image/jpeg\r\n\r\n")
+                        self.wfile.write(frame)
+                        self.wfile.write(b"\r\n")
+                    time.sleep(0.1)   # ~10fps im Preview
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        elif self.path == "/" or self.path == "/index.html":
+            html = """<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Hand Control Live</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background:#111; display:flex; flex-direction:column;
+         align-items:center; min-height:100vh;
+         font-family:sans-serif; color:#eee; padding: 16px; }
+  h1 { margin: 16px 0 12px; font-size:1.1rem; font-weight:400;
+       color:#aaa; letter-spacing:.05em; }
+  .stream-wrap { width:100%; max-width:800px; }
+  img { width:100%; height:auto; border-radius:8px;
+        display:block; background:#222; }
+  p  { color:#555; font-size:.8rem; margin-top:10px; text-align:center; }
+</style></head>
+<body>
+<h1>Hand Control - Live Preview</h1>
+<div class="stream-wrap">
+  <img src="/stream" alt="Live stream">
+</div>
+<p>Landmarks and detected gesture shown live</p>
+</body></html>""".encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(html)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
+    """Handle requests in a separate thread to prevent blocking."""
+    daemon_threads = True
+
+def start_preview_server(port=8765):
+    server = ThreadedHTTPServer(("0.0.0.0", port), MJPEGHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    log.info(f"Live Preview: http://<HA-IP>:{port}  |  Stream: http://<HA-IP>:{port}/stream")
+    return server
+
+# ──────────────────────────────────────────────────────────────
 # CONFIGURATION
 # ──────────────────────────────────────────────────────────────
 HA_OPTIONS_PATH = "/data/options.json"
@@ -51,13 +133,7 @@ ANALYSE_WIDTH = 320
 COMBO_WINDOW  = 2.0   # Sekunden zwischen zwei Gesten für eine Combo
 
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=1,
-    model_complexity=0,
-    min_detection_confidence=0.6,
-    min_tracking_confidence=0.6
-)
+# hands will be initialized in main() with configurable thresholds
 
 
 def load_config():
@@ -68,7 +144,10 @@ def load_config():
             "ha_url":          HA_URL,
             "ha_token":        HA_TOKEN,
             "rtsp_url":        RTSP_URL,
-            "debug_logging":   False
+            "debug_logging":   False,
+            "min_detection":   0.6,
+            "min_tracking":    0.6,
+            "motion_thr":      0.008
         },
         "gestures": {},   # einzelne Gesten
         "combos":   {}    # Combo-Gesten: "GESTE1+GESTE2" → action
@@ -85,6 +164,10 @@ def load_config():
             config["settings"]["ha_token"]        = data.get("ha_token",  "")
             config["settings"]["rtsp_url"]        = data.get("rtsp_url",  "")
             config["settings"]["debug_logging"]   = bool(data.get("debug_logging", False))
+            config["settings"]["live_preview"]    = bool(data.get("live_preview",   False))
+            config["settings"]["min_detection"]   = float(data.get("min_detection_confidence", 0.6))
+            config["settings"]["min_tracking"]    = float(data.get("min_tracking_confidence", 0.6))
+            config["settings"]["motion_thr"]      = float(data.get("motion_threshold", 0.008))
 
             if config["settings"]["debug_logging"]:
                 log.setLevel(logging.DEBUG)
@@ -106,22 +189,31 @@ def load_config():
                     config["gestures"][name] = {"service": svc, "entity_id": eid, "data": {}}
 
             # ── Combos ────────────────────────────────────────
-            # Format im Dashboard: "GESTE1+GESTE2,service,entity_id"
-            # Beispiel: "INDEX_POINTING+OPEN_HAND,light.toggle,light.wohnzimmer"
-            for i in range(1, 6):
+            # Format: "GESTE1+GESTE2,service,entity_id"       (2er)
+            # Format: "GESTE1+GESTE2+GESTE3,service,entity_id" (3er)
+            for i in range(1, 8):   # bis zu 7 Combos
                 val = data.get(f"combo_{i}_action", "")
                 if not val or val.count(",") < 1:
                     continue
-                # Trenne Combo-Key von service,entity
-                parts      = val.split(",", 2)
+                # Letztes Komma trennt entity_id, vorletztes den service
+                # Alles davor ist der Combo-Key (kann + enthalten)
+                parts = val.split(",")
                 if len(parts) < 3:
+                    log.warning(f"Combo {i}: braucht Format 'GESTE1+GESTE2,service,entity' — übersprungen")
                     continue
-                combo_key  = parts[0].strip().upper()   # z.B. "INDEX_POINTING+OPEN_HAND"
-                svc        = parts[1].strip()
-                eid        = parts[2].strip()
-                if "+" not in combo_key:
-                    log.warning(f"Combo {i}: kein '+' gefunden in '{combo_key}' — übersprungen")
+                # entity_id = letzter Teil, service = vorletzter, combo_key = Rest
+                eid       = parts[-1].strip()
+                svc       = parts[-2].strip()
+                combo_key = ",".join(parts[:-2]).strip().upper()
+
+                gesten = combo_key.split("+")
+                if len(gesten) < 2:
+                    log.warning(f"Combo {i}: kein '+' in '{combo_key}' — übersprungen")
                     continue
+                if len(gesten) > 3:
+                    log.warning(f"Combo {i}: maximal 3 Gesten erlaubt — übersprungen")
+                    continue
+
                 config["combos"][combo_key] = {"service": svc, "entity_id": eid, "data": {}}
 
             log.info(f"Einzelgesten geladen : {len(config['gestures'])}")
@@ -208,13 +300,24 @@ class ComboDetector:
         self.history.append((gesture, now))
         log.debug(f"Combo-History: {[(g, round(now-t,1)) for g,t in self.history]}")
 
-        # Prüfe ob die letzten 2 Gesten eine Combo bilden
+        # ── 3er-Combo zuerst prüfen (spezifischer) ────────────
+        if len(self.history) >= 3:
+            g1, t1 = self.history[-3]
+            g2, t2 = self.history[-2]
+            g3, t3 = self.history[-1]
+            # Alle 3 müssen innerhalb combo_window voneinander liegen
+            if (t2 - t1) <= self.window and (t3 - t2) <= self.window:
+                combo_key = f"{g1}+{g2}+{g3}"
+                log.debug(f"3er-Combo-Kandidat: {combo_key}")
+                return combo_key
+
+        # ── 2er-Combo prüfen ──────────────────────────────────
         if len(self.history) >= 2:
             g1, t1 = self.history[-2]
             g2, t2 = self.history[-1]
             if (t2 - t1) <= self.window:
                 combo_key = f"{g1}+{g2}"
-                log.debug(f"Combo-Kandidat: {combo_key} ({round(t2-t1,1)}s)")
+                log.debug(f"2er-Combo-Kandidat: {combo_key}")
                 return combo_key
 
         return None
@@ -286,7 +389,23 @@ def main():
     cooldown_val = settings.get("global_cooldown", COOLDOWN_SEK)
     combo_window = settings.get("combo_window",    COMBO_WINDOW)
     rtsp_url     = settings.get("rtsp_url", RTSP_URL)
+    live_preview = settings.get("live_preview", False)
     headless     = IS_ADDON or not os.environ.get("DISPLAY")
+
+    # Re-initialize hands with configured thresholds
+    hands = mp_hands.Hands(
+        static_image_mode=False,
+        max_num_hands=1,
+        model_complexity=0,
+        min_detection_confidence=settings.get("min_detection", 0.6),
+        min_tracking_confidence=settings.get("min_tracking", 0.6)
+    )
+
+    motion_threshold = settings.get("motion_thr", BEWEGUNG_MIN)
+
+    if live_preview:
+        preview.enabled = True
+        start_preview_server(port=8765)
 
     last_trigger_times = {}   # geste/combo → letzter fire timestamp
     combo_detector     = ComboDetector(combo_window)
@@ -350,7 +469,7 @@ def main():
         if not hand_kuerzelich and prev_gray is not None:
             delta  = cv2.absdiff(prev_gray, gray)
             moved  = cv2.countNonZero(cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)[1]) / gray.size
-            if moved < BEWEGUNG_MIN:
+            if moved < motion_threshold:
                 prev_gray = gray
                 time.sleep(max(0.05 - (time.time() - loop_start), 0.01))
                 continue
@@ -365,6 +484,38 @@ def main():
             last_hand_t = time.time()
             gesture     = detect_gesture(results.multi_hand_landmarks[0])
             log.debug(f"Geste: {gesture}")
+
+        # ── Live Preview Frame aufbauen ────────────────────────
+        if preview.enabled:
+            viz = small.copy()
+
+            # Landmarks zeichnen
+            if results.multi_hand_landmarks:
+                for hl in results.multi_hand_landmarks:
+                    mp.solutions.drawing_utils.draw_landmarks(
+                        viz, hl, mp_hands.HAND_CONNECTIONS,
+                        mp.solutions.drawing_utils.DrawingSpec(
+                            color=(0, 200, 100), thickness=2, circle_radius=3),
+                        mp.solutions.drawing_utils.DrawingSpec(
+                            color=(255, 255, 255), thickness=1)
+                    )
+
+            # Geste + Combo-History als Text
+            combo_hist = [g for g, _ in combo_detector.history]
+            farbe = (0, 220, 80) if gesture != "UNKNOWN" else (160, 160, 160)
+            cv2.putText(viz, gesture, (8, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, farbe, 2)
+            if combo_hist:
+                cv2.putText(viz, " + ".join(combo_hist), (8, 44),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 80), 1)
+
+            # Als JPEG kodieren und in shared state schreiben
+            # Hochskalieren für bessere Darstellung im Browser
+            viz_large = cv2.resize(viz, (640, int(640 * viz.shape[0] / viz.shape[1])))
+            ok, buf = cv2.imencode(".jpg", viz_large, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            if ok:
+                with preview.lock:
+                    preview.frame = buf.tobytes()
 
         # ── Combo-Check ───────────────────────────────────────
         combo_key = combo_detector.update(gesture)
@@ -407,7 +558,8 @@ def main():
         time.sleep(max(0.1 - (time.time() - loop_start), 0.01))
 
     cap.release()
-    hands.close()
+    if 'hands' in locals():
+        hands.close()
 
 
 if __name__ == "__main__":

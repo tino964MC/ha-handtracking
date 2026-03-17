@@ -1,6 +1,6 @@
 name: "Hand Control"
 description: "Control Home Assistant using hand gestures via RTSP camera stream."
-version: "1.3.3"
+version: "1.4.7"
 slug: "hand_control"
 init: false
 arch:
@@ -13,6 +13,10 @@ startup: application
 boot: auto
 map:
   - config:rw
+ports:
+  8765/tcp: 8765
+ports_description:
+  8765/tcp: "Live Preview (MJPEG Stream)"
 options:
   rtsp_url: "rtsp://user:pass@192.168.1.50:554/stream1"
   ha_url: "http://homeassistant.local:8123"
@@ -20,6 +24,10 @@ options:
   global_cooldown: 3.0
   combo_window: 2.0
   debug_logging: false
+  live_preview: false
+  min_detection_confidence: 0.6
+  min_tracking_confidence: 0.6
+  motion_threshold: 0.008
   peace_sign_action: ""
   index_pointing_action: ""
   thumbs_up_action: ""
@@ -31,6 +39,8 @@ options:
   combo_3_action: ""
   combo_4_action: ""
   combo_5_action: ""
+  combo_6_action: ""
+  combo_7_action: ""
 schema:
   rtsp_url: str
   ha_url: str
@@ -38,6 +48,10 @@ schema:
   global_cooldown: float
   combo_window: float
   debug_logging: bool
+  live_preview: bool
+  min_detection_confidence: float
+  min_tracking_confidence: float
+  motion_threshold: float
   peace_sign_action: str?
   index_pointing_action: str?
   thumbs_up_action: str?
@@ -49,3 +63,5 @@ schema:
   combo_3_action: str?
   combo_4_action: str?
   combo_5_action: str?
+  combo_6_action: str?
+  combo_7_action: str?
