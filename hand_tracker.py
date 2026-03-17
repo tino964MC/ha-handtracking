@@ -238,12 +238,21 @@ class ComboDetector:
     def update(self, g):
         now = time.time()
         if g == "UNKNOWN":
+            # Hand weg → History leeren damit nächste Sequenz sauber startet
+            if self.last_stable is not None:
+                self.history.clear()
             self.last_stable = None
             return None
         if g == self.last_stable:
             return None
         self.last_stable = g
         self.history.append((g, now))
+
+        # Alte Einträge außerhalb des Zeitfensters entfernen
+        cutoff = now - self.window
+        while self.history and self.history[0][1] < cutoff:
+            self.history.popleft()
+
         if len(self.history) >= 3:
             (g1,t1),(g2,t2),(g3,t3) = list(self.history)[-3:]
             if t2-t1 <= self.window and t3-t2 <= self.window:
@@ -387,9 +396,9 @@ def main():
                         call_ha(a["service"], a["entity_id"], config)
                         last_trigger[gesture] = now
 
-            # ── CPU-Throttle: max 8 Analysen/Sek ─────────────
+            # ── CPU-Throttle: 6 Analysen/Sek ─────────────────
             elapsed = time.time() - loop_start
-            time.sleep(max(0.125 - elapsed, 0.005))   # ~8fps
+            time.sleep(max(0.166 - elapsed, 0.005))   # ~6fps
 
     except KeyboardInterrupt:
         pass
