@@ -387,10 +387,9 @@ def main():
                         call_ha(a["service"], a["entity_id"], config)
                         last_trigger[gesture] = now
 
-            # ── CPU-Throttle: max 15 Analysen/Sek ────────────
-            # Nicht 0 — sonst 100% CPU. Nicht zu viel — sonst langsam.
+            # ── CPU-Throttle: max 8 Analysen/Sek ─────────────
             elapsed = time.time() - loop_start
-            time.sleep(max(0.066 - elapsed, 0.005))   # ~15fps
+            time.sleep(max(0.125 - elapsed, 0.005))   # ~8fps
 
     except KeyboardInterrupt:
         pass
