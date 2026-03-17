@@ -164,7 +164,7 @@ HA_URL    = os.getenv("HA_URL")
 HA_TOKEN  = os.getenv("HA_TOKEN")
 COOLDOWN_SEK  = 3.0
 BEWEGUNG_MIN  = 0.008
-ANALYSE_WIDTH = 320
+ANALYSE_WIDTH = 240   # Reduced from 320 for 1-core CPU efficiency
 COMBO_WINDOW  = 2.0
 
 mp_hands = mp.solutions.hands
@@ -337,12 +337,15 @@ def main():
                 log.info(f"[Heartbeat] Hand last seen {round(now-last_hand_t)}s ago")
                 debug_last = now
 
-            # Frame Skip
-            skip = 4 if (now - last_hand_t) > 5 else 2
-            if frame_count % skip != 0: continue
+            # Dynamic Frame Skipping (CPU-Friendly)
+            idle_time = now - last_hand_t
+            # Idle: Skip 6 frames (~3 FPS analysis) to save CPU
+            # Active: Skip 2 frames (~10 FPS analysis) for responsiveness
+            skip_rate = 6 if idle_time > 10 else 2
+            if frame_count % skip_rate != 0: continue
 
             h, w = frame.shape[:2]
-            scale = 320 / w
+            scale = ANALYSE_WIDTH / w
             small = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
             gray  = cv2.GaussianBlur(cv2.cvtColor(small, cv2.COLOR_BGR2GRAY), (21,21), 0)
 
